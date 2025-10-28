@@ -1,0 +1,2 @@
+- Framework: https://github.com/NVlabs/cvdp_benchmark
+- Dataset (JSONL): https://huggingface.co/datasets/nvidia/cvdp-benchmark-dataset
