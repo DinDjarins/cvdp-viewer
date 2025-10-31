@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Eye, EyeOff, Code, FileCode, ChevronDown, Copy, Check } from 'lucide-react';
+import { Eye, EyeOff, Code, FileCode, ChevronDown, Copy, Check, Star, CheckCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -7,36 +7,40 @@ const CVDPViewer = () => {
   const [problems, setProblems] = useState([]);
   const [selectedProblem, setSelectedProblem] = useState(null);
   const [showSolution, setShowSolution] = useState(false);
-  const [userSolution, setUserSolution] = useState('');
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState({ category: 'all', difficulty: 'all' });
+  const [filter, setFilter] = useState({ category: 'all', difficulty: 'all', status: [] });
   const [fileUploaded, setFileUploaded] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState('');
   const [expandedContextFiles, setExpandedContextFiles] = useState(new Set());
   const [expandedHarnessFiles, setExpandedHarnessFiles] = useState(new Set());
+  const [expandedPatchFiles, setExpandedPatchFiles] = useState(new Set());
   const [copiedFiles, setCopiedFiles] = useState(new Set());
+  const [favorites, setFavorites] = useState(new Set());
+  const [solved, setSolved] = useState(new Set());
+  const [patchSolutions, setPatchSolutions] = useState({});
   const [sidebarWidth, setSidebarWidth] = useState(384);
+  const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
   const sidebarRef = useRef(null);
   const isResizing = useRef(false);
+  const filterDropdownRef = useRef(null);
 
   const MIN_SIDEBAR_WIDTH = 250;
   const MAX_SIDEBAR_WIDTH = window.innerWidth * 0.5;
 
   const categories = {
-    'cid002': { name: 'RTL Code Completion', color: 'blue' },
-    'cid003': { name: 'Specification to RTL', color: 'green' },
-    'cid004': { name: 'RTL Code Modification', color: 'purple' },
-    'cid005': { name: 'Code Translation', color: 'amber' },
-    'cid007': { name: 'Code Improvement', color: 'orange' },
-    'cid012': { name: 'Testbench Stimulus Generation', color: 'pink' },
-    'cid013': { name: 'Testbench Checker Generation', color: 'rose' },
-    'cid014': { name: 'Assertion Generation', color: 'red' },
-    'cid016': { name: 'Debugging', color: 'yellow' },
-    'cid020': { name: 'RTL to Specification', color: 'teal' },
-    'cid021': { name: 'Specification to Testbench', color: 'cyan' },
-    'cid022': { name: 'RTL Technical Q&A', color: 'indigo' },
-    'cid023': { name: 'Testbench Technical Q&A', color: 'violet' },
-    'cid024': { name: 'RTL-Spec Matching', color: 'lime' }
+    'cid002': { name: 'RTL Code Completion' },
+    'cid003': { name: 'RTL Spec to Code' },
+    'cid004': { name: 'RTL Code Modification' },
+    'cid005': { name: 'RTL Module Reuse' },
+    'cid006': { name: 'RTL-Spec Correspondence' },
+    'cid007': { name: 'RTL Code Improvement' },
+    'cid008': { name: 'Testbench-Plan Correspondence' },
+    'cid009': { name: 'RTL Q&A' },
+    'cid010': { name: 'Testbench Q&A' },
+    'cid012': { name: 'Testbench Stimulus Generation' },
+    'cid013': { name: 'Testbench Checker Generation' },
+    'cid014': { name: 'Assertion Generation' },
+    'cid016': { name: 'Debugging / Bug Fixing' }
   };
 
   const difficulties = {
@@ -47,28 +51,28 @@ const CVDPViewer = () => {
 
   useEffect(() => {
     loadSavedProblems();
+    loadFavorites();
+    loadSolved();
+    
+    // Close filter dropdown when clicking outside
+    const handleClickOutside = (event) => {
+      if (filterDropdownRef.current && !filterDropdownRef.current.contains(event.target)) {
+        setIsFilterDropdownOpen(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
   }, []);
 
-  const loadSavedProblems = async () => {
+  const loadSavedProblems = () => {
     try {
       const saved = localStorage.getItem('cvdp-problems');
       if (saved) {
         const parsedProblems = JSON.parse(saved);
-        const cleanedProblems = parsedProblems.map(p => ({
-          ...p,
-          id: String(p.id || ''),
-          title: String(p.title || ''),
-          category: String(p.category || ''),
-          difficulty: String(p.difficulty || ''),
-          description: String(p.description || ''),
-          prompt: String(p.prompt || ''),
-          contextData: p.contextData || {},
-          patchData: p.patchData || {},
-          harnessData: p.harnessData || {},
-          systemMessage: p.systemMessage ? String(p.systemMessage) : null,
-          isAgentic: p.isAgentic !== undefined ? p.isAgentic : true
-        }));
-        setProblems(cleanedProblems);
+        setProblems(parsedProblems);
         setFileUploaded(true);
         const savedFileName = localStorage.getItem('cvdp-filename');
         if (savedFileName) {
@@ -78,6 +82,92 @@ const CVDPViewer = () => {
     } catch (error) {
       console.log('No saved problems found');
     }
+  };
+
+  const loadFavorites = () => {
+    try {
+      const saved = localStorage.getItem('cvdp-favorites');
+      if (saved) {
+        setFavorites(new Set(JSON.parse(saved)));
+      }
+    } catch (error) {
+      console.log('No saved favorites found');
+    }
+  };
+
+  const loadSolved = () => {
+    try {
+      const saved = localStorage.getItem('cvdp-solved');
+      if (saved) {
+        setSolved(new Set(JSON.parse(saved)));
+      }
+    } catch (error) {
+      console.log('No saved solved found');
+    }
+  };
+
+  const toggleFavorite = (problemId, e) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    const newFavorites = new Set(favorites);
+    if (newFavorites.has(problemId)) {
+      newFavorites.delete(problemId);
+    } else {
+      newFavorites.add(problemId);
+    }
+    setFavorites(newFavorites);
+    localStorage.setItem('cvdp-favorites', JSON.stringify([...newFavorites]));
+  };
+
+  const toggleSolved = (problemId, e) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    const newSolved = new Set(solved);
+    if (newSolved.has(problemId)) {
+      newSolved.delete(problemId);
+    } else {
+      newSolved.add(problemId);
+    }
+    setSolved(newSolved);
+    localStorage.setItem('cvdp-solved', JSON.stringify([...newSolved]));
+  };
+
+  // Recursive function to extract all nested content
+  const extractNestedContent = (obj, parentKey = '') => {
+    const result = {};
+    
+    if (obj === null || obj === undefined) {
+      return result;
+    }
+    
+    if (typeof obj !== 'object') {
+      return { [parentKey || 'value']: String(obj) };
+    }
+    
+    if (Array.isArray(obj)) {
+      return { [parentKey || 'array']: JSON.stringify(obj, null, 2) };
+    }
+    
+    Object.keys(obj).forEach(key => {
+      const value = obj[key];
+      const newKey = parentKey ? `${parentKey}/${key}` : key;
+      
+      if (value === null || value === undefined) {
+        result[newKey] = 'null';
+      } else if (typeof value === 'object' && !Array.isArray(value)) {
+        // Recursively extract nested objects
+        const nested = extractNestedContent(value, newKey);
+        Object.assign(result, nested);
+      } else if (Array.isArray(value)) {
+        result[newKey] = JSON.stringify(value, null, 2);
+      } else {
+        result[newKey] = String(value);
+      }
+    });
+    
+    return result;
   };
 
   const handleFileUpload = async (event) => {
@@ -104,49 +194,68 @@ const CVDPViewer = () => {
           let harnessData = {};
           let isAgentic = false;
           
+          // Determine if agentic or non-agentic based on structure
           if (problem.prompt) {
             isAgentic = true;
             description = problem.prompt || 'No description available';
             promptText = problem.prompt;
-            if (problem.context && typeof problem.context === 'object') {
-              contextData = JSON.parse(JSON.stringify(problem.context));
+            
+            // Extract all context files recursively
+            if (problem.context) {
+              contextData = extractNestedContent(problem.context);
             }
-            if (problem.patch && typeof problem.patch === 'object') {
-              patchData = JSON.parse(JSON.stringify(problem.patch));
+            
+            // Extract patch files recursively
+            if (problem.patch) {
+              patchData = extractNestedContent(problem.patch);
             }
-            if (problem.harness && typeof problem.harness === 'object') {
-              harnessData = JSON.parse(JSON.stringify(problem.harness));
+            
+            // Extract harness files recursively
+            if (problem.harness) {
+              harnessData = extractNestedContent(problem.harness);
             }
           } else if (problem.input || problem.output) {
             isAgentic = false;
-            if (problem.input && typeof problem.input === 'object' && problem.input.prompt) {
-              description = String(problem.input.prompt);
-              promptText = String(problem.input.prompt);
-            } else if (typeof problem.input === 'string') {
-              description = problem.input;
-              promptText = problem.input;
-            } else {
-              description = 'No description available';
-              promptText = '';
-            }
             
-            if (problem.output) {
-              patchData = { 'expected_output': String(problem.output) };
-            }
-            
-            if (problem.harness && typeof problem.harness === 'object') {
-              if (problem.harness.files && typeof problem.harness.files === 'object') {
-                Object.keys(problem.harness.files).forEach(filename => {
-                  const content = problem.harness.files[filename];
-                  harnessData[filename] = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-                });
-              } else {
-                Object.keys(problem.harness).forEach(key => {
-                  const value = problem.harness[key];
-                  harnessData[key] = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-                });
+            // Handle input (can be string or object with prompt)
+            if (problem.input) {
+              if (typeof problem.input === 'object') {
+                // Extract prompt from input object
+                if (problem.input.prompt) {
+                  description = String(problem.input.prompt);
+                  promptText = String(problem.input.prompt);
+                }
+                
+                // Extract all other fields from input as context
+                const inputContext = { ...problem.input };
+                delete inputContext.prompt;
+                if (Object.keys(inputContext).length > 0) {
+                  contextData = extractNestedContent(inputContext, 'input');
+                }
+              } else if (typeof problem.input === 'string') {
+                description = problem.input;
+                promptText = problem.input;
               }
             }
+            
+            // Extract output as patch
+            if (problem.output) {
+              if (typeof problem.output === 'object') {
+                patchData = extractNestedContent(problem.output, 'output');
+              } else {
+                patchData = { 'expected_output': String(problem.output) };
+              }
+            }
+            
+            // Extract harness files recursively
+            if (problem.harness) {
+              harnessData = extractNestedContent(problem.harness);
+            }
+          }
+          
+          if (!description && !promptText) {
+            description = 'No description available';
+            promptText = 'No prompt available';
           }
           
           parsedProblems.push({
@@ -189,72 +298,82 @@ const CVDPViewer = () => {
   const filteredProblems = problems.filter(p => {
     if (filter.category !== 'all' && p.category !== filter.category) return false;
     if (filter.difficulty !== 'all' && p.difficulty !== filter.difficulty) return false;
+    
+    // Status filter
+    if (filter.status.length > 0) {
+      const isFavorite = favorites.has(p.id);
+      const isSolved = solved.has(p.id);
+      
+      const hasFavoriteFilter = filter.status.includes('favorite');
+      const hasSolvedFilter = filter.status.includes('solved');
+      
+      if (hasFavoriteFilter && hasSolvedFilter) {
+        if (!isFavorite || !isSolved) return false;
+      } else if (hasFavoriteFilter) {
+        if (!isFavorite) return false;
+      } else if (hasSolvedFilter) {
+        if (!isSolved) return false;
+      }
+    }
+    
     return true;
   });
 
   const selectProblem = (problem) => {
     setSelectedProblem(problem);
     setShowSolution(false);
-    setUserSolution('');
     setExpandedContextFiles(new Set());
     setExpandedHarnessFiles(new Set());
     setCopiedFiles(new Set());
-  };
-
-  const saveSolution = async () => {
-    if (!selectedProblem || !userSolution.trim()) return;
+    loadPatchSolutions(problem.id);
     
-    try {
-      const key = `solution-${selectedProblem.id}`;
-      localStorage.setItem(key, userSolution);
-      alert('Solution saved successfully!');
-    } catch (error) {
-      alert('Failed to save solution');
+    // Auto-expand editable patch files, collapse non-editable
+    const newExpandedPatchFiles = new Set();
+    if (problem.patchData) {
+      Object.entries(problem.patchData).forEach(([filename, content]) => {
+        const isEmpty = !content || content.trim() === '' || content === 'null';
+        if (isEmpty) {
+          newExpandedPatchFiles.add(filename);
+        }
+      });
     }
+    setExpandedPatchFiles(newExpandedPatchFiles);
   };
 
-  const loadUserSolution = async () => {
-    if (!selectedProblem) return;
-    
+  const loadPatchSolutions = (problemId) => {
     try {
-      const key = `solution-${selectedProblem.id}`;
+      const key = `patch-solutions-${problemId}`;
       const saved = localStorage.getItem(key);
       if (saved) {
-        setUserSolution(saved);
+        setPatchSolutions(JSON.parse(saved));
+      } else {
+        setPatchSolutions({});
       }
     } catch (error) {
-      console.log('No saved solution found');
+      console.log('No saved patch solutions found');
+      setPatchSolutions({});
     }
   };
 
-  useEffect(() => {
-    if (selectedProblem) {
-      loadUserSolution();
+  const savePatchSolution = (filename, content) => {
+    if (!selectedProblem) return;
+    
+    const newSolutions = { ...patchSolutions, [filename]: content };
+    setPatchSolutions(newSolutions);
+    
+    try {
+      const key = `patch-solutions-${selectedProblem.id}`;
+      localStorage.setItem(key, JSON.stringify(newSolutions));
+    } catch (error) {
+      console.error('Failed to save patch solution');
     }
-  }, [selectedProblem]);
+  };
 
   const CategoryBadge = ({ categoryId }) => {
-    const category = categories[categoryId] || { name: categoryId, color: 'gray' };
-    const bgColors = {
-      blue: 'bg-blue-100 text-blue-800',
-      green: 'bg-green-100 text-green-800',
-      purple: 'bg-purple-100 text-purple-800',
-      amber: 'bg-amber-100 text-amber-800',
-      orange: 'bg-orange-100 text-orange-800',
-      pink: 'bg-pink-100 text-pink-800',
-      rose: 'bg-rose-100 text-rose-800',
-      red: 'bg-red-100 text-red-800',
-      yellow: 'bg-yellow-100 text-yellow-800',
-      teal: 'bg-teal-100 text-teal-800',
-      cyan: 'bg-cyan-100 text-cyan-800',
-      indigo: 'bg-indigo-100 text-indigo-800',
-      violet: 'bg-violet-100 text-violet-800',
-      lime: 'bg-lime-100 text-lime-800',
-      gray: 'bg-gray-100 text-gray-800'
-    };
+    const category = categories[categoryId] || { name: categoryId };
     
     return (
-      <span className={`px-2 py-1 rounded text-xs font-semibold ${bgColors[category.color]}`}>
+      <span className="px-2 py-1 rounded text-xs font-semibold bg-gray-100 text-gray-800">
         {category.name}
       </span>
     );
@@ -296,6 +415,16 @@ const CVDPViewer = () => {
     setExpandedHarnessFiles(newSet);
   };
 
+  const togglePatchFile = (key) => {
+    const newSet = new Set(expandedPatchFiles);
+    if (newSet.has(key)) {
+      newSet.delete(key);
+    } else {
+      newSet.add(key);
+    }
+    setExpandedPatchFiles(newSet);
+  };
+
   const copyToClipboard = async (text, fileId) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -335,6 +464,19 @@ const CVDPViewer = () => {
     isResizing.current = false;
     document.removeEventListener('mousemove', handleMouseMove);
     document.removeEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleStatusFilterChange = (value) => {
+    const newStatus = [...filter.status];
+    const index = newStatus.indexOf(value);
+    
+    if (index > -1) {
+      newStatus.splice(index, 1);
+    } else {
+      newStatus.push(value);
+    }
+    
+    setFilter({...filter, status: newStatus});
   };
 
   if (loading) {
@@ -381,21 +523,8 @@ const CVDPViewer = () => {
           </div>
           
           <div className="mt-6 text-xs text-gray-500">
-            <p className="mb-2 font-semibold">Supported formats:</p>
-            <div className="space-y-2">
-              <div>
-                <p className="font-medium mb-1">Agentic format:</p>
-                <code className="block bg-gray-100 p-2 rounded text-xs overflow-x-auto">
-                  {`{"id":"...","categories":["cid002","easy"],"prompt":"...","context":{...},"patch":{...},"harness":{...}}`}
-                </code>
-              </div>
-              <div>
-                <p className="font-medium mb-1">Non-agentic format:</p>
-                <code className="block bg-gray-100 p-2 rounded text-xs overflow-x-auto">
-                  {`{"id":"...","categories":["cid002","easy"],"input":"...","output":"...","harness":{...}}`}
-                </code>
-              </div>
-            </div>
+            <p className="mb-2 font-semibold">Supported categories:</p>
+            <p className="text-xs">cid002-cid010, cid012-cid014, cid016</p>
           </div>
         </div>
       </div>
@@ -566,19 +695,18 @@ const CVDPViewer = () => {
                 >
                   <option value="all">All Categories</option>
                   <option value="cid002">cid002 - RTL Code Completion</option>
-                  <option value="cid003">cid003 - Specification to RTL</option>
+                  <option value="cid003">cid003 - RTL Spec to Code</option>
                   <option value="cid004">cid004 - RTL Code Modification</option>
-                  <option value="cid005">cid005 - Code Translation</option>
-                  <option value="cid007">cid007 - Code Improvement</option>
+                  <option value="cid005">cid005 - RTL Module Reuse</option>
+                  <option value="cid006">cid006 - RTL-Spec Correspondence</option>
+                  <option value="cid007">cid007 - RTL Code Improvement</option>
+                  <option value="cid008">cid008 - Testbench-Plan Correspondence</option>
+                  <option value="cid009">cid009 - RTL Q&A</option>
+                  <option value="cid010">cid010 - Testbench Q&A</option>
                   <option value="cid012">cid012 - Testbench Stimulus Generation</option>
                   <option value="cid013">cid013 - Testbench Checker Generation</option>
                   <option value="cid014">cid014 - Assertion Generation</option>
-                  <option value="cid016">cid016 - Debugging</option>
-                  <option value="cid020">cid020 - RTL to Specification</option>
-                  <option value="cid021">cid021 - Specification to Testbench</option>
-                  <option value="cid022">cid022 - RTL Technical Q&A</option>
-                  <option value="cid023">cid023 - Testbench Technical Q&A</option>
-                  <option value="cid024">cid024 - RTL-Spec Matching</option>
+                  <option value="cid016">cid016 - Debugging / Bug Fixing</option>
                 </select>
               </div>
               
@@ -594,6 +722,48 @@ const CVDPViewer = () => {
                   <option value="medium">Medium</option>
                   <option value="hard">Hard</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Filters</label>
+                <div className="relative" ref={filterDropdownRef}>
+                  <button
+                    onClick={() => setIsFilterDropdownOpen(!isFilterDropdownOpen)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-left bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-transparent flex items-center justify-between"
+                  >
+                    <span className="text-gray-700">
+                      {filter.status.length === 0 ? 'None' : 
+                       filter.status.length === 1 ? (filter.status[0] === 'favorite' ? 'Favorites' : 'Solved') :
+                       'Favorites & Solved'}
+                    </span>
+                    <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${isFilterDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  
+                  {isFilterDropdownOpen && (
+                    <div className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg">
+                      <div className="p-2 space-y-2">
+                        <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                          <input
+                            type="checkbox"
+                            checked={filter.status.includes('favorite')}
+                            onChange={() => handleStatusFilterChange('favorite')}
+                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <span className="ml-2 text-sm text-gray-700">Favorites</span>
+                        </label>
+                        <label className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded">
+                          <input
+                            type="checkbox"
+                            checked={filter.status.includes('solved')}
+                            onChange={() => handleStatusFilterChange('solved')}
+                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <span className="ml-2 text-sm text-gray-700">Solved</span>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
             
@@ -613,14 +783,34 @@ const CVDPViewer = () => {
                     : 'bg-white border border-gray-200 hover:bg-gray-50 hover:shadow'
                 }`}
               >
-                <div className="flex items-start justify-between mb-2">
+                <div className="flex items-start justify-between mb-2 gap-2">
                   <h3 className="font-semibold text-sm text-gray-900 flex-1 leading-tight">
                     {problem.title}
                   </h3>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <DifficultyBadge difficulty={problem.difficulty} />
+                    <button
+                      onClick={(e) => toggleSolved(problem.id, e)}
+                      className={`p-1 rounded hover:bg-gray-200 transition-colors ${
+                        solved.has(problem.id) ? 'text-green-600' : 'text-gray-400'
+                      }`}
+                      title={solved.has(problem.id) ? 'Mark as unsolved' : 'Mark as solved'}
+                    >
+                      <CheckCircle className="w-4 h-4" fill="none" strokeWidth={solved.has(problem.id) ? 2.5 : 2} />
+                    </button>
+                    <button
+                      onClick={(e) => toggleFavorite(problem.id, e)}
+                      className={`p-1 rounded hover:bg-gray-200 transition-colors ${
+                        favorites.has(problem.id) ? 'text-yellow-500' : 'text-gray-400'
+                      }`}
+                      title={favorites.has(problem.id) ? 'Remove from favorites' : 'Add to favorites'}
+                    >
+                      <Star className="w-4 h-4" fill={favorites.has(problem.id) ? 'currentColor' : 'none'} />
+                    </button>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <CategoryBadge categoryId={problem.category} />
-                  <DifficultyBadge difficulty={problem.difficulty} />
                 </div>
                 <div className="mt-2 text-xs text-gray-500 font-mono">
                   {problem.id}
@@ -645,17 +835,34 @@ const CVDPViewer = () => {
                     <h2 className="text-2xl font-bold text-gray-900">
                       {selectedProblem.title}
                     </h2>
+                    <CategoryBadge categoryId={selectedProblem.category} />
                   </div>
                   <div className="flex flex-wrap items-center gap-3">
-                    <CategoryBadge categoryId={selectedProblem.category} />
                     <DifficultyBadge difficulty={selectedProblem.difficulty} />
                     <span className="text-xs text-gray-500 font-mono">
                       {selectedProblem.id}
                     </span>
                   </div>
                 </div>
-                <div className="ml-4">
-                  <Code className="w-8 h-8 text-blue-500" />
+                <div className="ml-4 flex items-center gap-2">
+                  <button
+                    onClick={(e) => toggleSolved(selectedProblem.id, e)}
+                    className={`p-2 rounded-lg hover:bg-gray-100 transition-colors ${
+                      solved.has(selectedProblem.id) ? 'text-green-600' : 'text-gray-400'
+                    }`}
+                    title={solved.has(selectedProblem.id) ? 'Mark as unsolved' : 'Mark as solved'}
+                  >
+                    <CheckCircle className="w-6 h-6" fill="none" strokeWidth={solved.has(selectedProblem.id) ? 2.5 : 2} />
+                  </button>
+                  <button
+                    onClick={(e) => toggleFavorite(selectedProblem.id, e)}
+                    className={`p-2 rounded-lg hover:bg-gray-100 transition-colors ${
+                      favorites.has(selectedProblem.id) ? 'text-yellow-500' : 'text-gray-400'
+                    }`}
+                    title={favorites.has(selectedProblem.id) ? 'Remove from favorites' : 'Add to favorites'}
+                  >
+                    <Star className="w-6 h-6" fill={favorites.has(selectedProblem.id) ? 'currentColor' : 'none'} />
+                  </button>
                 </div>
               </div>
 
@@ -681,6 +888,8 @@ const CVDPViewer = () => {
                         const displayValue = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
                         const fileId = `context-${key}`;
                         const isCopied = copiedFiles.has(fileId);
+                        const isMarkdown = key.endsWith('.md') || key.includes('.md/');
+                        
                         return (
                           <div key={key} className="bg-white rounded-lg border border-blue-200 overflow-hidden">
                             <div 
@@ -712,7 +921,7 @@ const CVDPViewer = () => {
                             </div>
                             {isExpanded && (
                               <div className="p-4 bg-gray-50">
-                                {key.endsWith('.md') ? (
+                                {isMarkdown ? (
                                   <div className="markdown-content">
                                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                       {displayValue || 'N/A'}
@@ -741,6 +950,8 @@ const CVDPViewer = () => {
                         const displayContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
                         const fileId = `harness-${filename}`;
                         const isCopied = copiedFiles.has(fileId);
+                        const isMarkdown = filename.endsWith('.md') || filename.includes('.md/');
+                        
                         return (
                           <div key={filename} className="bg-white rounded-lg border border-purple-200 overflow-hidden">
                             <div 
@@ -772,7 +983,7 @@ const CVDPViewer = () => {
                             </div>
                             {isExpanded && (
                               <div className="p-4 bg-gray-50">
-                                {filename.endsWith('.md') ? (
+                                {isMarkdown ? (
                                   <div className="markdown-content">
                                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                       {displayContent}
@@ -794,33 +1005,6 @@ const CVDPViewer = () => {
               </div>
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">Your Solution</h3>
-                <button
-                  onClick={saveSolution}
-                  disabled={!userSolution.trim()}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    userSolution.trim()
-                      ? 'bg-blue-600 text-white hover:bg-blue-700'
-                      : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  }`}
-                >
-                  Save Solution
-                </button>
-              </div>
-              
-              <textarea
-                value={userSolution}
-                onChange={(e) => setUserSolution(e.target.value)}
-                placeholder="Write your SystemVerilog solution here..."
-                className="w-full h-96 px-4 py-3 border border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-              />
-              <div className="mt-2 text-xs text-gray-500">
-                {userSolution.length} characters
-              </div>
-            </div>
-
             {selectedProblem.patchData && Object.keys(selectedProblem.patchData).length > 0 && (
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
                 <div className="flex items-center justify-between mb-4">
@@ -830,41 +1014,95 @@ const CVDPViewer = () => {
                       'Expected Output'
                     }
                   </h3>
-                  <button
-                    onClick={() => setShowSolution(!showSolution)}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors"
-                  >
-                    {showSolution ? (
-                      <>
-                        <EyeOff className="w-4 h-4" />
-                        Hide Solution
-                      </>
-                    ) : (
-                      <>
-                        <Eye className="w-4 h-4" />
-                        Show Solution
-                      </>
-                    )}
-                  </button>
                 </div>
                 
-                {showSolution && (
-                  <div className="space-y-3">
-                    {Object.entries(selectedProblem.patchData).map(([filename, patch]) => {
-                      const displayPatch = typeof patch === 'object' ? JSON.stringify(patch, null, 2) : String(patch);
-                      return (
-                        <div key={filename}>
-                          {filename !== 'solution' && filename !== 'expected_output' && (
-                            <div className="text-sm font-semibold text-gray-700 mb-1">{filename}</div>
-                          )}
-                          <pre className="whitespace-pre-wrap text-xs text-gray-700 bg-amber-50 p-4 rounded-lg border border-amber-200 overflow-x-auto font-mono">
-                            {displayPatch || 'No solution available'}
-                          </pre>
+                <div className="space-y-3">
+                  {Object.entries(selectedProblem.patchData).map(([filename, content]) => {
+                    const displayContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+                    const isEmpty = !content || content.trim() === '' || content === 'null';
+                    const isExpanded = expandedPatchFiles.has(filename);
+                    const fileId = `patch-${filename}`;
+                    const isCopied = copiedFiles.has(fileId);
+                    const userContent = patchSolutions[filename] || '';
+                    
+                    // Check if content has markdown formatting
+                    const hasMarkdown = !isEmpty && (
+                      displayContent.includes('#') || 
+                      displayContent.includes('**') || 
+                      displayContent.includes('*') || 
+                      displayContent.includes('`') ||
+                      displayContent.includes('[') ||
+                      displayContent.includes('|') ||
+                      displayContent.includes('>') ||
+                      /^\d+\./.test(displayContent) ||
+                      /^-\s/.test(displayContent)
+                    );
+                    
+                    return (
+                      <div key={filename} className="bg-white rounded-lg border border-amber-200 overflow-hidden">
+                        <div 
+                          className="bg-amber-100 px-4 py-2 border-b border-amber-200 flex items-center justify-between"
+                        >
+                          <button 
+                            className="flex items-center gap-2 flex-1 cursor-pointer text-left"
+                            onClick={() => togglePatchFile(filename)}
+                          >
+                            <ChevronDown 
+                              className={`w-4 h-4 text-amber-900 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-0' : 'rotate-[-90deg]'}`}
+                            />
+                            <span className="font-semibold text-amber-900 text-sm font-mono">{filename}</span>
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const contentToCopy = isEmpty ? userContent : displayContent;
+                              copyToClipboard(contentToCopy, fileId);
+                            }}
+                            className="ml-2 p-1.5 hover:bg-amber-200 rounded transition-colors flex items-center gap-1 flex-shrink-0"
+                            title="Copy file content"
+                          >
+                            {isCopied ? (
+                              <Check className="w-4 h-4 text-green-600" />
+                            ) : (
+                              <Copy className="w-4 h-4 text-amber-900" />
+                            )}
+                          </button>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        {isExpanded && (
+                          <div className="p-4 bg-white">
+                            {isEmpty ? (
+                              <div>
+                                <textarea
+                                  value={userContent}
+                                  onChange={(e) => savePatchSolution(filename, e.target.value)}
+                                  placeholder="Write your solution here..."
+                                  className="w-full h-96 px-4 py-3 border border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent resize-none bg-white"
+                                />
+                                <div className="mt-2 text-xs text-gray-500">
+                                  {userContent.length} characters
+                                </div>
+                              </div>
+                            ) : (
+                              <div>
+                                {hasMarkdown ? (
+                                  <div className="markdown-content">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {displayContent}
+                                    </ReactMarkdown>
+                                  </div>
+                                ) : (
+                                  <pre className="text-xs font-mono text-gray-800 whitespace-pre overflow-x-auto">
+                                    {displayContent}
+                                  </pre>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
