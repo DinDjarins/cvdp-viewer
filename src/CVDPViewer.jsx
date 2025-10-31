@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Eye, EyeOff, Code, FileCode, ChevronDown, Copy, Check, Star, CheckCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { openDB } from 'idb';
 
 const CVDPViewer = () => {
   const [problems, setProblems] = useState([]);
@@ -20,9 +21,11 @@ const CVDPViewer = () => {
   const [patchSolutions, setPatchSolutions] = useState({});
   const [sidebarWidth, setSidebarWidth] = useState(384);
   const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const sidebarRef = useRef(null);
   const isResizing = useRef(false);
   const filterDropdownRef = useRef(null);
+  const dbRef = useRef(null);
 
   const MIN_SIDEBAR_WIDTH = 250;
   const MAX_SIDEBAR_WIDTH = window.innerWidth * 0.5;
@@ -49,10 +52,35 @@ const CVDPViewer = () => {
     'hard': { color: 'red', label: 'Hard' }
   };
 
+  // Initialize IndexedDB
+  const initDB = async () => {
+    if (dbRef.current) return dbRef.current;
+    
+    try {
+      const db = await openDB('cvdp-viewer-db', 1, {
+        upgrade(db) {
+          if (!db.objectStoreNames.contains('settings')) {
+            db.createObjectStore('settings');
+          }
+          if (!db.objectStoreNames.contains('solutions')) {
+            db.createObjectStore('solutions');
+          }
+        },
+      });
+      dbRef.current = db;
+      return db;
+    } catch (error) {
+      console.error('Failed to initialize DB:', error);
+      return null;
+    }
+  };
+
   useEffect(() => {
-    loadSavedProblems();
-    loadFavorites();
-    loadSolved();
+    initDB().then(() => {
+      loadSavedProblems();
+      loadFavorites();
+      loadSolved();
+    });
     
     // Close filter dropdown when clicking outside
     const handleClickOutside = (event) => {
@@ -67,46 +95,55 @@ const CVDPViewer = () => {
     };
   }, []);
 
-  const loadSavedProblems = () => {
+  const loadSavedProblems = async () => {
     try {
-      const saved = localStorage.getItem('cvdp-problems');
-      if (saved) {
-        const parsedProblems = JSON.parse(saved);
-        setProblems(parsedProblems);
+      const db = await initDB();
+      if (!db) return;
+      
+      const savedProblems = await db.get('settings', 'problems');
+      if (savedProblems) {
+        setProblems(savedProblems);
         setFileUploaded(true);
-        const savedFileName = localStorage.getItem('cvdp-filename');
-        if (savedFileName) {
-          setUploadedFileName(savedFileName);
-        }
+      }
+      
+      const fileName = await db.get('settings', 'filename');
+      if (fileName) {
+        setUploadedFileName(fileName);
       }
     } catch (error) {
-      console.log('No saved problems found');
+      console.log('No saved problems found:', error);
     }
   };
 
-  const loadFavorites = () => {
+  const loadFavorites = async () => {
     try {
-      const saved = localStorage.getItem('cvdp-favorites');
+      const db = await initDB();
+      if (!db) return;
+      
+      const saved = await db.get('settings', 'favorites');
       if (saved) {
-        setFavorites(new Set(JSON.parse(saved)));
+        setFavorites(new Set(saved));
       }
     } catch (error) {
       console.log('No saved favorites found');
     }
   };
 
-  const loadSolved = () => {
+  const loadSolved = async () => {
     try {
-      const saved = localStorage.getItem('cvdp-solved');
+      const db = await initDB();
+      if (!db) return;
+      
+      const saved = await db.get('settings', 'solved');
       if (saved) {
-        setSolved(new Set(JSON.parse(saved)));
+        setSolved(new Set(saved));
       }
     } catch (error) {
       console.log('No saved solved found');
     }
   };
 
-  const toggleFavorite = (problemId, e) => {
+  const toggleFavorite = async (problemId, e) => {
     if (e) {
       e.stopPropagation();
     }
@@ -117,10 +154,18 @@ const CVDPViewer = () => {
       newFavorites.add(problemId);
     }
     setFavorites(newFavorites);
-    localStorage.setItem('cvdp-favorites', JSON.stringify([...newFavorites]));
+    
+    try {
+      const db = await initDB();
+      if (db) {
+        await db.put('settings', [...newFavorites], 'favorites');
+      }
+    } catch (error) {
+      console.error('Failed to save favorites');
+    }
   };
 
-  const toggleSolved = (problemId, e) => {
+  const toggleSolved = async (problemId, e) => {
     if (e) {
       e.stopPropagation();
     }
@@ -131,7 +176,15 @@ const CVDPViewer = () => {
       newSolved.add(problemId);
     }
     setSolved(newSolved);
-    localStorage.setItem('cvdp-solved', JSON.stringify([...newSolved]));
+    
+    try {
+      const db = await initDB();
+      if (db) {
+        await db.put('settings', [...newSolved], 'solved');
+      }
+    } catch (error) {
+      console.error('Failed to save solved');
+    }
   };
 
   // Recursive function to extract all nested content
@@ -285,8 +338,12 @@ const CVDPViewer = () => {
       setProblems(parsedProblems);
       setFileUploaded(true);
       setUploadedFileName(file.name);
-      localStorage.setItem('cvdp-problems', JSON.stringify(parsedProblems));
-      localStorage.setItem('cvdp-filename', file.name);
+      
+      const db = await initDB();
+      if (db) {
+        await db.put('settings', parsedProblems, 'problems');
+        await db.put('settings', file.name, 'filename');
+      }
       
     } catch (error) {
       alert('Error reading file: ' + error.message);
@@ -298,6 +355,13 @@ const CVDPViewer = () => {
   const filteredProblems = problems.filter(p => {
     if (filter.category !== 'all' && p.category !== filter.category) return false;
     if (filter.difficulty !== 'all' && p.difficulty !== filter.difficulty) return false;
+    
+    // Search filter
+    if (searchQuery.trim() !== '') {
+      const query = searchQuery.toLowerCase();
+      const searchableText = `${p.id} ${p.title} ${p.category}`.toLowerCase();
+      if (!searchableText.includes(query)) return false;
+    }
     
     // Status filter
     if (filter.status.length > 0) {
@@ -319,13 +383,13 @@ const CVDPViewer = () => {
     return true;
   });
 
-  const selectProblem = (problem) => {
+  const selectProblem = async (problem) => {
     setSelectedProblem(problem);
     setShowSolution(false);
     setExpandedContextFiles(new Set());
     setExpandedHarnessFiles(new Set());
     setCopiedFiles(new Set());
-    loadPatchSolutions(problem.id);
+    await loadPatchSolutions(problem.id);
     
     // Auto-expand editable patch files, collapse non-editable
     const newExpandedPatchFiles = new Set();
@@ -340,12 +404,14 @@ const CVDPViewer = () => {
     setExpandedPatchFiles(newExpandedPatchFiles);
   };
 
-  const loadPatchSolutions = (problemId) => {
+  const loadPatchSolutions = async (problemId) => {
     try {
-      const key = `patch-solutions-${problemId}`;
-      const saved = localStorage.getItem(key);
+      const db = await initDB();
+      if (!db) return;
+      
+      const saved = await db.get('solutions', problemId);
       if (saved) {
-        setPatchSolutions(JSON.parse(saved));
+        setPatchSolutions(saved);
       } else {
         setPatchSolutions({});
       }
@@ -355,15 +421,17 @@ const CVDPViewer = () => {
     }
   };
 
-  const savePatchSolution = (filename, content) => {
+  const savePatchSolution = async (filename, content) => {
     if (!selectedProblem) return;
     
     const newSolutions = { ...patchSolutions, [filename]: content };
     setPatchSolutions(newSolutions);
     
     try {
-      const key = `patch-solutions-${selectedProblem.id}`;
-      localStorage.setItem(key, JSON.stringify(newSolutions));
+      const db = await initDB();
+      if (db) {
+        await db.put('solutions', newSolutions, selectedProblem.id);
+      }
     } catch (error) {
       console.error('Failed to save patch solution');
     }
@@ -670,13 +738,20 @@ const CVDPViewer = () => {
               </div>
             )}
             <button
-              onClick={() => {
+              onClick={async () => {
                 setFileUploaded(false);
                 setProblems([]);
                 setSelectedProblem(null);
                 setUploadedFileName('');
-                localStorage.removeItem('cvdp-problems');
-                localStorage.removeItem('cvdp-filename');
+                try {
+                  const db = await initDB();
+                  if (db) {
+                    await db.delete('settings', 'problems');
+                    await db.delete('settings', 'filename');
+                  }
+                } catch (error) {
+                  console.error('Error clearing data');
+                }
               }}
               className="mt-2 text-xs text-blue-100 hover:text-white underline"
             >
@@ -767,7 +842,18 @@ const CVDPViewer = () => {
               </div>
             </div>
             
-            <div className="mt-3 text-xs text-gray-600">
+            <div className="mt-3 mb-3">
+              <label className="block text-xs font-medium text-gray-700 mb-1">Search</label>
+              <input
+                type="text"
+                placeholder="Search by ID, title, or category..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            
+            <div className="text-xs text-gray-600">
               Showing {filteredProblems.length} of {problems.length} problems
             </div>
           </div>
@@ -1025,32 +1111,19 @@ const CVDPViewer = () => {
                     const isCopied = copiedFiles.has(fileId);
                     const userContent = patchSolutions[filename] || '';
                     
-                    // Check if content has markdown formatting
-                    const hasMarkdown = !isEmpty && (
-                      displayContent.includes('#') || 
-                      displayContent.includes('**') || 
-                      displayContent.includes('*') || 
-                      displayContent.includes('`') ||
-                      displayContent.includes('[') ||
-                      displayContent.includes('|') ||
-                      displayContent.includes('>') ||
-                      /^\d+\./.test(displayContent) ||
-                      /^-\s/.test(displayContent)
-                    );
-                    
                     return (
-                      <div key={filename} className="bg-white rounded-lg border border-amber-200 overflow-hidden">
+                      <div key={filename} className="bg-white rounded-lg border border-green-300 overflow-hidden">
                         <div 
-                          className="bg-amber-100 px-4 py-2 border-b border-amber-200 flex items-center justify-between"
+                          className="bg-green-100 px-4 py-2 border-b border-green-300 flex items-center justify-between"
                         >
                           <button 
                             className="flex items-center gap-2 flex-1 cursor-pointer text-left"
                             onClick={() => togglePatchFile(filename)}
                           >
                             <ChevronDown 
-                              className={`w-4 h-4 text-amber-900 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-0' : 'rotate-[-90deg]'}`}
+                              className={`w-4 h-4 text-green-900 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-0' : 'rotate-[-90deg]'}`}
                             />
-                            <span className="font-semibold text-amber-900 text-sm font-mono">{filename}</span>
+                            <span className="font-semibold text-green-900 text-sm font-mono">{filename}</span>
                           </button>
                           <button
                             onClick={(e) => {
@@ -1058,43 +1131,33 @@ const CVDPViewer = () => {
                               const contentToCopy = isEmpty ? userContent : displayContent;
                               copyToClipboard(contentToCopy, fileId);
                             }}
-                            className="ml-2 p-1.5 hover:bg-amber-200 rounded transition-colors flex items-center gap-1 flex-shrink-0"
+                            className="ml-2 p-1.5 hover:bg-green-200 rounded transition-colors flex items-center gap-1 flex-shrink-0"
                             title="Copy file content"
                           >
                             {isCopied ? (
                               <Check className="w-4 h-4 text-green-600" />
                             ) : (
-                              <Copy className="w-4 h-4 text-amber-900" />
+                              <Copy className="w-4 h-4 text-green-900" />
                             )}
                           </button>
                         </div>
                         {isExpanded && (
-                          <div className="p-4 bg-white">
+                          <div className="bg-white">
                             {isEmpty ? (
-                              <div>
-                                <textarea
-                                  value={userContent}
-                                  onChange={(e) => savePatchSolution(filename, e.target.value)}
-                                  placeholder="Write your solution here..."
-                                  className="w-full h-96 px-4 py-3 border border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent resize-none bg-white"
-                                />
-                                <div className="mt-2 text-xs text-gray-500">
-                                  {userContent.length} characters
-                                </div>
-                              </div>
+                              <textarea
+                                value={userContent}
+                                onChange={(e) => savePatchSolution(filename, e.target.value)}
+                                placeholder="Write your solution here..."
+                                className="w-full h-96 font-mono text-sm resize-none bg-white"
+                                style={{ border: 'none', outline: 'none', boxShadow: 'none', margin: 0, padding: '1rem' }}
+                              />
                             ) : (
-                              <div>
-                                {hasMarkdown ? (
-                                  <div className="markdown-content">
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                      {displayContent}
-                                    </ReactMarkdown>
-                                  </div>
-                                ) : (
-                                  <pre className="text-xs font-mono text-gray-800 whitespace-pre overflow-x-auto">
+                              <div className="p-4">
+                                <div className="markdown-content">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                     {displayContent}
-                                  </pre>
-                                )}
+                                  </ReactMarkdown>
+                                </div>
                               </div>
                             )}
                           </div>
